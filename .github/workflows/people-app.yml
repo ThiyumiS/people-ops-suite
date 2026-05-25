@@ -1,0 +1,24 @@
+name: Build people-app
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main  #change into correct branch 
+    paths:
+      - apps/people-app/microapp/**
+
+jobs:
+  build:
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+    uses: ./.github/workflows/reusable-frontend-build.yml
+    with:
+      app_name: people-app
+      app_path: apps/people-app/microapp
+      initial_version: "2.0.3-build.18"   # Use the latest version from the database
+      build_command: npm run build
+      output_dir: dist
+    secrets:
+      REACT_APP_API_BASE: ${{ secrets.REACT_APP_API_BASE }}

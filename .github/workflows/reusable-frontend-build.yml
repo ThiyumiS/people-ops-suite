@@ -1,0 +1,138 @@
+name: Reusable Frontend Build Release
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: true
+        type: string
+      app_path:
+        required: true
+        type: string
+      initial_version:
+        required: false
+        type: string
+        default: ""
+        description: "Last known version from the DB (e.g. 2.4.0-build.5). Only used on the very first run when no git tag exists yet."
+      bump_type:
+        required: false
+        type: string
+        default: patch
+      node_version:
+        required: false
+        type: string
+        default: "20"
+      build_command:
+        required: false
+        type: string
+        default: npm run build
+      output_dir:
+        required: false
+        type: string
+        default: dist
+    secrets:
+      REACT_APP_API_BASE:
+        required: false
+
+jobs:
+  detect_version_bump:
+    name: Detect Version Bump
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+      build:   ${{ steps.detect.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Version Bump from PR labels
+        id: detect
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          APP_NAME: ${{ inputs.app_name }}
+          INITIAL_VERSION: ${{ inputs.initial_version }}
+        run: bash .github/scripts/detect-version-bump.sh
+
+  staging_build:
+    name: Staging Build
+    needs: detect_version_bump
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.app_path }}/package-lock.json
+
+      - name: Build frontend
+        working-directory: ${{ inputs.app_path }}
+        env:
+          CI: false
+          REACT_APP_API_BASE: ${{ secrets.REACT_APP_API_BASE }}
+        run: |
+          npm ci
+          ${{ inputs.build_command }}
+          BUILD_FILE="${{ inputs.app_name }}-staging-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}"
+          mv "${{ inputs.output_dir }}" "$BUILD_FILE"
+          zip -r "$BUILD_FILE.zip" "$BUILD_FILE"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app_name }}-staging-build
+          path: ${{ inputs.app_path }}/${{ inputs.app_name }}-staging-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}.zip
+
+  production_build:
+    name: Production Build
+    needs: [detect_version_bump, staging_build]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.app_path }}/package-lock.json
+
+      - name: Build frontend
+        working-directory: ${{ inputs.app_path }}
+        env:
+          CI: false
+          REACT_APP_API_BASE: ${{ secrets.REACT_APP_API_BASE }}
+        run: |
+          npm ci
+          ${{ inputs.build_command }}
+          BUILD_FILE="${{ inputs.app_name }}-production-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}"
+          mv "${{ inputs.output_dir }}" "$BUILD_FILE"
+          zip -r "$BUILD_FILE.zip" "$BUILD_FILE"
+
+      - name: Download Staging Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.app_name }}-staging-build
+          path: ${{ inputs.app_path }}
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.app_name }}-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}
+          name: ${{ inputs.app_name }} v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}
+          files: |
+            ${{ inputs.app_path }}/${{ inputs.app_name }}-staging-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}.zip
+            ${{ inputs.app_path }}/${{ inputs.app_name }}-production-v${{ needs.detect_version_bump.outputs.version }}-build.${{ needs.detect_version_bump.outputs.build }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
